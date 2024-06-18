@@ -1,0 +1,125 @@
+sudo apt update
+sudo apt install python3.11
+sudo apt install python3-pip
+pip install virtualenv
+sudo apt install python3-virtualenv
+virtualenv airflow_env
+source airflow_env/bin/activate
+mkdir airflow
+pip install apache-airflow
+     Install MySQL on Ubuntu: 
+sudo apt install mysql-server
+
+     Creating Database for Airflow:
+sudo mysql	
+CREATE DATABASE airflow_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'airflow_user' IDENTIFIED BY 'airflow_pass';
+GRANT ALL PRIVILEGES ON airflow_db.* TO 'airflow_user';
+
+     Define Connection in airflow.cfg:
+sql_alchemy_conn = mysql+mysqldb://airflow_user:airflow_pass@127.0.0.1:3306/airflow_db
+
+	 Creating an Airflow User:
+airflow users create --username admin --password admin --role Admin --firstname admin --lastname admin --email admin@example.com
+
+	 Migrate Airflow:
+airflow db migrate
+airflow db init
+
+	Launch airflow
+airflow schedular
+airflow webserver              or airflow standalone 
+
+	backup.sh
+#!/bin/bash
+
+# Variables
+USER="airflow_user"
+PASSWORD="airflow_pass"
+HOST="localhost"
+DATABASE="airflow_db"
+BACKUP_PATH="/home/akuma/airflow/dump_backup"
+
+# Create backup
+mysqldump -u $USER -p$PASSWORD -h $HOST $DATABASE > $BACKUP_PATH/${DATABASE}_$(date +%F_%T).sql
+
+	cleanup.sh
+#!/bin/bash
+
+# Variables
+DUMP_DIR="/home/akuma/airflow/dump_backup" 
+FILE_LIMIT=2  # The maximum number of files to keep
+
+# Count the number of files in the directory
+file_count=$(ls -1 $DUMP_DIR | wc -l)
+
+# If the number of files exceeds the limit, delete the oldest files
+if [ $file_count -gt $FILE_LIMIT ]; then
+    # Find and delete the oldest files
+    ls -1t $DUMP_DIR | tail -n +$(($FILE_LIMIT + 1)) | xargs -I {} rm -f $DUMP_DIR/{}
+    echo "Deleted the oldest files to maintain the file limit of $FILE_LIMIT."
+else
+    echo "The number of files ($file_count) is within the limit ($FILE_LIMIT). No files deleted."
+fi
+
+	dump_dag.py
+from airflow import DAG
+from airflow.operators.bash_operator import BashOperator
+from airflow.operators.email_operator import EmailOperator
+from airflow.utils.dates import days_ago
+from datetime import timedelta
+
+# Default arguments
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+# Define the DAG
+dag = DAG(
+    '2mysql_backup_dag',
+    default_args=default_args,
+    description='DAG for MySQL backup, cleanup, and notification',
+    schedule_interval=timedelta(days=1),
+    start_date=days_ago(1),
+    catchup=False,
+)
+
+# Task to dump MySQL database
+dump_mysql = BashOperator(
+    task_id='dump_mysql',
+    bash_command='bash /home/akuma/airflow/dags/dump_mysql.sh ',
+    dag=dag,
+)
+
+# Task to cleanup old dumps
+cleanup_dumps = BashOperator(
+    task_id='cleanup_dumps',
+    bash_command='bash /home/akuma/airflow/dags/dump_mysql.sh ',
+    dag=dag,
+)
+
+# Task to send email notification
+send_email = EmailOperator(
+    task_id='send_email',
+    to='hrishavsilwal@gmail.com',
+    subject='MySQL Backup and Cleanup Report',
+    html_content="""
+    <h3>MySQL Backup and Cleanup Report</h3>
+    <p>Backup and cleanup tasks have been completed successfully.</p>
+    <p>Details:</p>
+    <ul>
+        <li><strong>Backup:</strong> Completed</li>
+        <li><strong>Cleanup:</strong> Completed</li>
+    </ul>
+    """,
+    dag=dag,
+)
+
+# Define task dependencies
+dump_mysql >> cleanup_dumps >> send_email
+
